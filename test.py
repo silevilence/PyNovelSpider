@@ -39,7 +39,7 @@ def main():
         sys.exit(1)
 
     # 提取参数值（从第一个参数开始）
-    test_names = sys.argv[1:]
+    test_names = [sys.argv[1]]
 
     # 用于存储所有错误
     all_errors = []

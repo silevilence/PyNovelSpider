@@ -12,6 +12,7 @@ from novel_spiders.utils.novel_save_load import (
     novel_to_markdown,
 )
 from novel_spiders.entities.novel import Novel
+from novel_spiders.utils.progress_listener import ConsoleProgressListener
 
 
 async def _test_syosetu(code: str):
@@ -23,6 +24,10 @@ async def _test_syosetu(code: str):
     spider.resource_name = code
     spider.data_root = f"./data/syosetu/{code}"
     spider.asset_dir = "assets"
+
+    # 添加进度监听器
+    progress_listener = ConsoleProgressListener()
+    spider.add_event_listener(progress_listener)
 
     novel_path = os.path.join(spider.data_root, f"{code}.json")
     novel: Novel | None = None

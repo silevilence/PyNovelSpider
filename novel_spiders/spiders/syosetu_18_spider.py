@@ -1,15 +1,21 @@
 from typing import Tuple, List
+from threading import Lock
 
 from bs4.element import Tag
 from novel_spiders.entities.novel import Novel, Chapter, ChapterContent
 from novel_spiders.interfaces.INovelSpider import INovelSpider
 from novel_spiders.utils.requests_helper import get_webpage, download_image
+from novel_spiders.events.spider_events import (
+    SpiderEvent,
+    SpiderEventType,
+    ChapterProgressData,
+    NovelInfoData,
+)
 from bs4 import BeautifulSoup
 import re
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import os
-
 
 class Syosetu18Spider(INovelSpider):
     """Syosetu18小说爬虫"""
@@ -25,11 +31,15 @@ class Syosetu18Spider(INovelSpider):
     APPEND_PATTERN = re.compile(r"La\d+")
 
     def __init__(self):
+        super().__init__()
         self._resource_name = "Syosetu18"
         self._headless = False
         self._asset_dir = "assets"
         self._current_proxy = ""
         self._data_root = "."
+        self._total_chapters = 0
+        self._completed_chapters = 0  # 已完成章节计数
+        self._completed_chapters_lock = Lock()  # 线程锁
 
     def _get_nvoel_base_info(self, html: str) -> Tuple[str, str, str, int]:
         """获取小说基本信息
@@ -74,39 +84,6 @@ class Syosetu18Spider(INovelSpider):
                 desc = td
 
         return title, author, desc, chapter
-
-    def _parse_single_chapter(self, html: str, ch_num: int) -> Chapter:
-        """解析单章内容
-        :param html: 网页内容
-        :return: 章节对象
-        """
-        soup = BeautifulSoup(html, "html.parser")
-
-        # 大章节标题
-        ep_span = soup.select_one(".c-announce > span:not([class])")
-        ep = self.DEFAULT_EP
-
-        if ep_span is not None:
-            ep = ep_span.text.strip()
-
-        article_tag = soup.find("article", class_="p-novel")
-        if not isinstance(article_tag, Tag):
-            raise Exception("Failed to get article tag")
-        title_tag = article_tag.find("h1", class_="p-novel__title")
-        title = "" if title_tag is None else title_tag.text.strip()
-
-        pre_contents = self._get_chapter_body(soup, self.PREPEND_PATTERN, ch_num)
-        body_contents = self._get_chapter_body(soup, self.BODY_PATTERN, ch_num)
-        append_contents = self._get_chapter_body(soup, self.APPEND_PATTERN, ch_num)
-
-        return Chapter(
-            index=ch_num,
-            title=title,
-            ep_title=ep,
-            prepend_contents=pre_contents,
-            contents=body_contents,
-            append_contents=append_contents,
-        )
 
     def _get_chapter_body(
         self, soup: BeautifulSoup, pattern: re.Pattern[str], ch_num: int
@@ -165,7 +142,39 @@ class Syosetu18Spider(INovelSpider):
                 ccs.append(ChapterContent(key=content["id"], content=content.text))
 
         return ccs
-        # return [ChapterContent(content["id"], content.text) for content in contents]
+
+    def _parse_single_chapter(self, html: str, ch_num: int) -> Chapter:
+        """解析单章内容
+        :param html: 网页内容
+        :return: 章节对象
+        """
+        soup = BeautifulSoup(html, "html.parser")
+
+        # 大章节标题
+        ep_span = soup.select_one(".c-announce > span:not([class])")
+        ep = self.DEFAULT_EP
+
+        if ep_span is not None:
+            ep = ep_span.text.strip()
+
+        article_tag = soup.find("article", class_="p-novel")
+        if not isinstance(article_tag, Tag):
+            raise Exception("Failed to get article tag")
+        title_tag = article_tag.find("h1", class_="p-novel__title")
+        title = "" if title_tag is None else title_tag.text.strip()
+
+        pre_contents = self._get_chapter_body(soup, self.PREPEND_PATTERN, ch_num)
+        body_contents = self._get_chapter_body(soup, self.BODY_PATTERN, ch_num)
+        append_contents = self._get_chapter_body(soup, self.APPEND_PATTERN, ch_num)
+
+        return Chapter(
+            index=ch_num,
+            title=title,
+            ep_title=ep,
+            prepend_contents=pre_contents,
+            contents=body_contents,
+            append_contents=append_contents,
+        )
 
     def _get_chapter_by_index(self, index: int) -> Chapter:
         """根据章节索引获取章节内容
@@ -175,7 +184,6 @@ class Syosetu18Spider(INovelSpider):
         proxy = self._current_proxy
         # 完整网址
         url = f"{self.CHAPTER_URL}{self.resource_name}/{index}/"
-        # print("url:", url)
         # 根据代理获取网页内容
         cookies = {"over18": "yes"}
         headers = {
@@ -195,39 +203,109 @@ class Syosetu18Spider(INovelSpider):
         :return: 章节索引、章节对象
         """
         loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(executor, self._get_chapter_by_index, index)
-        return index, result
+        try:
+            result = await loop.run_in_executor(executor, self._get_chapter_by_index, index)
+            
+            # 使用线程锁保护计数器操作
+            with self._completed_chapters_lock:
+                self._completed_chapters += 1
+                current_completed = self._completed_chapters  # 在锁内获取当前值
+            
+            # 发送章节完成事件（在锁外执行，避免阻塞）
+            self._event_dispatcher.dispatch_event(
+                SpiderEvent(
+                    type=SpiderEventType.CHAPTER_COMPLETE,
+                    data=ChapterProgressData(
+                        current=current_completed,  # 使用在锁内获取的值
+                        total=self._total_chapters,
+                        latest_chapter=result.title
+                    )
+                )
+            )
+            return index, result
+        except Exception as e:
+            self._event_dispatcher.dispatch_event(
+                SpiderEvent(
+                    type=SpiderEventType.ERROR,
+                    error=e
+                )
+            )
+            raise
 
     async def get_novel(self, proxy: str = "") -> Novel:
         """获取小说信息"""
+        try:
+            proxy = proxy.strip()
+            self._current_proxy = proxy
+            # 重置完成章节计数（不需要锁，因为此时还没有开始并发）
+            self._completed_chapters = 0
 
-        proxy = proxy.strip()
-        self._current_proxy = proxy
+            # 发送开始爬取信息页事件
+            self._event_dispatcher.dispatch_event(
+                SpiderEvent(type=SpiderEventType.INFO_PAGE_START)
+            )
 
-        # 完整网址
-        url = f"{self.INFO_PAGE_URL}{self.resource_name}/"
-        # print("url:", url)
-        # 根据代理获取网页内容
-        cookies = {"over18": "yes"}
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
-        }
-        html = get_webpage(url, proxy, cookies, headers)
-        if html is None:
-            raise Exception("Failed to get webpage")
-        title, author, description, chapter_num = self._get_nvoel_base_info(html)
+            # 完整网址
+            url = f"{self.INFO_PAGE_URL}{self.resource_name}/"
+            # 根据代理获取网页内容
+            cookies = {"over18": "yes"}
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
+            }
+            html = get_webpage(url, proxy, cookies, headers)
+            if html is None:
+                raise Exception("Failed to get webpage")
+            
+            title, author, description, chapter_num = self._get_nvoel_base_info(html)
+            self._total_chapters = chapter_num  # 保存总章节数用于进度计算
 
-        # 从1到最后一章异步并行获取章节内容
-        executor = ThreadPoolExecutor(max_workers=5)
-        tasks = [
-            self._get_chapter_async(executor, i) for i in range(1, chapter_num + 1)
-        ]
-        ch_results = await asyncio.gather(*tasks)
-        sorted_ch_results = sorted(ch_results, key=lambda x: x[0])
+            # 发送信息页完成事件
+            self._event_dispatcher.dispatch_event(
+                SpiderEvent(
+                    type=SpiderEventType.INFO_PAGE_COMPLETE,
+                    data=NovelInfoData(
+                        title=title,
+                        author=author,
+                        chapter_count=chapter_num
+                    )
+                )
+            )
 
-        return Novel(
-            title=title,
-            description=description,
-            author=author,
-            chapters=[ch for _, ch in sorted_ch_results],
-        )
+            # 发送开始爬取章节事件
+            self._event_dispatcher.dispatch_event(
+                SpiderEvent(
+                    type=SpiderEventType.CHAPTERS_START,
+                    data=chapter_num
+                )
+            )
+
+            # 从1到最后一章异步并行获取章节内容
+            executor = ThreadPoolExecutor(max_workers=5)
+            tasks = [
+                self._get_chapter_async(executor, i) for i in range(1, chapter_num + 1)
+            ]
+            ch_results = await asyncio.gather(*tasks)
+            sorted_ch_results = sorted(ch_results, key=lambda x: x[0])
+
+            novel = Novel(
+                title=title,
+                description=description,
+                author=author,
+                chapters=[ch for _, ch in sorted_ch_results],
+            )
+
+            # 发送完成事件
+            self._event_dispatcher.dispatch_event(
+                SpiderEvent(type=SpiderEventType.COMPLETE)
+            )
+
+            return novel
+        except Exception as e:
+            # 发送错误事件
+            self._event_dispatcher.dispatch_event(
+                SpiderEvent(
+                    type=SpiderEventType.ERROR,
+                    error=e
+                )
+            )
+            raise

@@ -7,6 +7,7 @@ from novel_spiders.utils.novel_save_load import (
     load_json_dict,
     novel_to_markdown,
 )
+from novel_spiders.utils.progress_listener import ConsoleProgressListener
 from novel_spiders.entities.novel import Novel
 import asyncio
 import io
@@ -45,6 +46,10 @@ async def main():
     spider.data_root = f"./data/{code}"
     spider.asset_dir = "assets"
 
+    # 添加进度监听器
+    progress_listener = ConsoleProgressListener()
+    spider.add_event_listener(progress_listener)
+
     # 目录不存在则创建
     if not os.path.exists(spider.data_root):
         os.makedirs(spider.data_root)
@@ -52,18 +57,18 @@ async def main():
     novel_path = os.path.join(spider.data_root, f"{code}.json")
     novel: Optional[Novel] = None
     if os.path.exists(novel_path):
-        print(f"Load novel from {novel_path}")
+        print(f"从 {novel_path} 加载小说...")
         with io.open(novel_path, "r", encoding="utf-8") as f:
             novel = load_novel_from_json(f.read())
     else:
-        print(f"Get novel from {spider.resource_name}")
+        # 使用进度监听器后无需再打印开始信息
         novel = await spider.get_novel(proxy=Syosetu18Spider.PROXY_URL)
         with io.open(novel_path, "w", encoding="utf-8") as f:
             f.write(novel_to_json(novel))
 
     untrans_json_path = os.path.join(spider.data_root, f"{code}_untrans.json")
     if not os.path.exists(untrans_json_path):
-        print(f"Save untranslatable json to {untrans_json_path}")
+        print(f"保存可翻译json到 {untrans_json_path}")
         with io.open(untrans_json_path, "w", encoding="utf-8") as f:
             f.write(novel_to_translatable_json(novel))
 
@@ -73,12 +78,12 @@ async def main():
         trans_json_path = os.path.join(spider.data_root, f"合并结果.json")
     trans_dict: Dict[str, str] = {}
     if os.path.exists(trans_json_path):
-        print("Load translatable")
+        print("加载翻译数据...")
         with io.open(trans_json_path, "r", encoding="utf-8") as f:
             trans_json = f.read()
             trans_dict = load_json_dict(trans_json)
 
-    print("Save markdown")
+    print("生成markdown...")
     md_text = novel_to_markdown(novel, trans_dict)
     with io.open(
         os.path.join(spider.data_root, f"{code}.md"), "w", encoding="utf-8"
