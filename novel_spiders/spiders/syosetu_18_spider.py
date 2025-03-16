@@ -1,4 +1,4 @@
-from typing import Tuple, List
+from typing import Dict, Tuple, List
 from threading import Lock
 
 from bs4.element import Tag
@@ -29,6 +29,9 @@ class Syosetu18Spider(INovelSpider):
     PREPEND_PATTERN = re.compile(r"Lp\d+")
     BODY_PATTERN = re.compile(r"L\d+")
     APPEND_PATTERN = re.compile(r"La\d+")
+    
+    KEY_AUTHOR = "作者名"
+    KEY_DESC = "あらすじ"
 
     def __init__(self):
         super().__init__()
@@ -47,12 +50,15 @@ class Syosetu18Spider(INovelSpider):
         :return: 小说标题、作者、简介、章节数
         """
         soup = BeautifulSoup(html, "html.parser")
-        # 标题：<div id="contents_main"> -> h1 -> a
-        title_tag = soup.select_one("#contents_main > h1 > a")
+        # 标题：<h1 class="p-infotop-title"><a href="https://ncode.syosetu.com/n2516ia/">街中ダンジョン</a></h1>
+        title_tag = soup.select_one("h1.p-infotop-title > a")
         title = "" if title_tag is None else title_tag.text.strip()
 
-        # 章节数：div id=pre_info，取最后一个a标签的href，根据url最后一层为最后一章
-        chapter_tag = soup.select_one("#pre_info > a:last-child")
+        # 章节数：<div class="p-infotop-type__left">
+        # <span class="p-infotop-type__type p-infotop-type__type--serialized">連載中</span>
+        # <span class="p-infotop-type__allep">全680エピソード</span>
+        # <a href="https://ncode.syosetu.com/n2516ia/1/">1エピソード目を読む</a>&nbsp;|&nbsp;<a href="https://ncode.syosetu.com/n2516ia/680/">最新エピソードを読む</a></div>
+        chapter_tag = soup.select_one("div.p-infotop-type__left > a:last-child")
         chapter = 0
         if chapter_tag is not None:
             chapter_url_attr = chapter_tag.get("href")
@@ -66,22 +72,37 @@ class Syosetu18Spider(INovelSpider):
         author = ""
         desc = ""
 
-        table = soup.find("table", id="noveltable1")
+        # <dl class="p-infotop-data">
+        # <dt class="p-infotop-data__title">键</dt>
+        # <dd class="p-infotop-data__value">值</dd>
+        # <dt class=...
+        # </dl>
+        table = soup.find("dl", class_="p-infotop-data")
         if not isinstance(table, Tag):
             return title, author, desc, chapter
+        
+        dict_kv : Dict[str, str] = {}
+        for dt, dd in zip(table.find_all("dt"), table.find_all("dd")):
+            dict_kv[dt.text.strip()] = dd.text.strip()
+        
+        if self.KEY_AUTHOR in dict_kv:
+            author = dict_kv[self.KEY_AUTHOR]
+        if self.KEY_DESC in dict_kv:
+            desc = dict_kv[self.KEY_DESC]
 
-        trs = table.find_all("tr")
-        for tr in trs:
-            th_tag = tr.find("th")
-            td_tag = tr.find("td")
-            if th_tag is None or td_tag is None:
-                continue
-            th = th_tag.text.strip()
-            td = td_tag.text.strip()
-            if "作者名" in th:
-                author = td
-            elif "あらすじ" in th:
-                desc = td
+
+        # trs = table.find_all("tr")
+        # for tr in trs:
+        #     th_tag = tr.find("th")
+        #     td_tag = tr.find("td")
+        #     if th_tag is None or td_tag is None:
+        #         continue
+        #     th = th_tag.text.strip()
+        #     td = td_tag.text.strip()
+        #     if "作者名" in th:
+        #         author = td
+        #     elif "あらすじ" in th:
+        #         desc = td
 
         return title, author, desc, chapter
 
