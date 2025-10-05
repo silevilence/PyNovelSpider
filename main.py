@@ -84,11 +84,12 @@ async def main():
             trans_dict = load_json_dict(trans_json)
 
     print("生成markdown...")
-    md_text = novel_to_markdown(novel, trans_dict)
-    with io.open(
-        os.path.join(spider.data_root, f"{code}.md"), "w", encoding="utf-8"
-    ) as f:
-        f.write(md_text)
+    md_text_dict = novel_to_markdown(novel, trans_dict, 700000)
+    for key, md_text in md_text_dict.items():
+        with io.open(
+            os.path.join(spider.data_root, f"{code}({key}).md"), "w", encoding="utf-8"
+        ) as f:
+            f.write(md_text)
 
 
 if __name__ == "__main__":

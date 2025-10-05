@@ -52,8 +52,7 @@ async def _test_syosetu(code: str):
         print(f"章节数：{len(novel.chapters)}")
 
         # 保存可翻译的json
-        untrans_json_path = os.path.join(
-            spider.data_root, f"{code}_untrans.json")
+        untrans_json_path = os.path.join(spider.data_root, f"{code}_untrans.json")
         if not os.path.exists(untrans_json_path):
             print(f"保存可翻译json到{untrans_json_path}")
             with io.open(untrans_json_path, "w", encoding="utf-8") as f:
@@ -72,9 +71,14 @@ async def _test_syosetu(code: str):
 
         # 生成markdown
         print("生成markdown...")
-        md_text = novel_to_markdown(novel, trans_dict)
-        with io.open(os.path.join(spider.data_root, f"{code}.md"), "w", encoding="utf-8") as f:
-            f.write(md_text)
+        md_text_dict = novel_to_markdown(novel, trans_dict, 500000)
+        for key, md_text in md_text_dict.items():
+            with io.open(
+                os.path.join(spider.data_root, f"{code}({key}).md"),
+                "w",
+                encoding="utf-8",
+            ) as f:
+                f.write(md_text)
 
     except Exception as e:
         print(f"发生错误：{e}")
